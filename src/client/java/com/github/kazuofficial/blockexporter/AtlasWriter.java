@@ -4,13 +4,12 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.util.Identifier;
-
 import java.io.IOException;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import net.minecraft.resources.Identifier;
 
 public class AtlasWriter {
 	public static JsonObject buildAtlasIndexJson(List<Identifier> items, int cellSize, Identifier texture) {

@@ -1,26 +1,24 @@
 package com.github.kazuofficial.blockexporter;
 
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.data.ModelIds;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.widget.ButtonWidget;
-import net.minecraft.client.render.item.ItemRenderState;
-import net.minecraft.client.render.item.model.ItemModel;
-import net.minecraft.client.render.model.BakedModelManager;
-import net.minecraft.client.texture.NativeImage;
-import net.minecraft.item.Item;
-import net.minecraft.item.ItemDisplayContext;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.registry.Registries;
-import net.minecraft.screen.ScreenTexts;
-import net.minecraft.text.Text;
-import net.minecraft.util.Colors;
-import net.minecraft.util.Identifier;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.data.models.model.ModelLocationUtils;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.renderer.item.ItemModel;
+import net.minecraft.client.renderer.item.ItemStackRenderState;
+import net.minecraft.client.resources.model.ModelManager;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.chat.CommonComponents;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.util.CommonColors;
 import net.minecraft.util.Util;
-
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemDisplayContext;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -54,21 +52,21 @@ public class ExportScreen extends Screen {
 	private int currentItemIndex = 0;
 	private final AtomicInteger completedItems = new AtomicInteger(0);
 	private boolean isExporting = false;
-	private ButtonWidget startCancelButton;
-	private ButtonWidget doneButton;
+	private Button startCancelButton;
+	private Button doneButton;
 	private ItemRenderer itemRenderer;
 	private Path exportDirectory;
 
 	public ExportScreen() {
-		super(Text.translatable("screen.blockexporter.title"));
-		this.allItems = new ArrayList<>(Registries.ITEM.stream().filter(item -> item != Items.AIR).toList());
+		super(Component.translatable("screen.blockexporter.title"));
+		this.allItems = new ArrayList<>(BuiltInRegistries.ITEM.stream().filter(item -> item != Items.AIR).toList());
 		this.itemsToExport = new ArrayList<>(this.allItems);
 	}
 
 	@Override
 	protected void init() {
 		super.init();
-		this.exportDirectory = this.client.runDirectory.toPath().resolve("item_exports");
+		this.exportDirectory = this.minecraft.gameDirectory.toPath().resolve("item_exports");
 
 		int buttonWidth = 100;
 		int buttonHeight = 24;
@@ -86,33 +84,33 @@ public class ExportScreen extends Screen {
 			}
 		}
 
-		this.startCancelButton = this.addDrawableChild(ButtonWidget.builder(
-						Text.literal(isExporting ? "Cancel Export" : "▶ Export Items"),
+		this.startCancelButton = this.addRenderableWidget(Button.builder(
+						Component.literal(isExporting ? "Cancel Export" : "▶ Export Items"),
 						button -> {
 							exportButton(items, blocks);
 						})
-				.dimensions(buttonsX, this.height - 40, buttonWidth, buttonHeight)
+				.bounds(buttonsX, this.height - 40, buttonWidth, buttonHeight)
 				.build()
 		);
 
-		this.addDrawableChild(ButtonWidget.builder(
-						Text.literal("📁 Open Folder"),
+		this.addRenderableWidget(Button.builder(
+						Component.literal("📁 Open Folder"),
 						button -> {
 							try {
 								Files.createDirectories(this.exportDirectory);
-								Util.getOperatingSystem().open(this.exportDirectory.toFile());
+								Util.getPlatform().openFile(this.exportDirectory.toFile());
 							} catch (IOException e) {
 								BlockExporter.LOGGER.error("Couldn't open export folder", e);
 							}
 						})
-				.dimensions(buttonsX + buttonWidth + spacing, this.height - 40, buttonWidth, buttonHeight)
+				.bounds(buttonsX + buttonWidth + spacing, this.height - 40, buttonWidth, buttonHeight)
 				.build()
 		);
 
-		this.doneButton = this.addDrawableChild(ButtonWidget.builder(
-						ScreenTexts.DONE,
-						button -> this.close())
-				.dimensions(buttonsX + (buttonWidth + spacing) * 2, this.height - 40, buttonWidth, buttonHeight)
+		this.doneButton = this.addRenderableWidget(Button.builder(
+						CommonComponents.GUI_DONE,
+						button -> this.onClose())
+				.bounds(buttonsX + (buttonWidth + spacing) * 2, this.height - 40, buttonWidth, buttonHeight)
 				.build()
 		);
 		updateButtonStates();
@@ -186,8 +184,8 @@ public class ExportScreen extends Screen {
 		}
 
 		JsonObject root = new JsonObject();
-		JsonObject itemAtlas = AtlasWriter.buildAtlasIndexJson(items.stream().map(Registries.ITEM::getId).toList(), 16, ITEM_TEXTURE);
-		JsonObject blockAtlas = AtlasWriter.buildAtlasIndexJson(blocks.stream().map(Registries.ITEM::getId).toList(), 22, BLOCK_TEXTURE);
+		JsonObject itemAtlas = AtlasWriter.buildAtlasIndexJson(items.stream().map(BuiltInRegistries.ITEM::getKey).toList(), 16, ITEM_TEXTURE);
+		JsonObject blockAtlas = AtlasWriter.buildAtlasIndexJson(blocks.stream().map(BuiltInRegistries.ITEM::getKey).toList(), 22, BLOCK_TEXTURE);
 
 		root.add("items", itemAtlas);
 		root.add("blocks", blockAtlas);
@@ -210,13 +208,13 @@ public class ExportScreen extends Screen {
 	}
 
 	@Override
-	public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-		this.renderInGameBackground(context);
+	public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
+		this.renderTransparentBackground(context);
 
 		int panelHeight = 240;
 		int panelY = (this.height - panelHeight) / 2 - 20;
 
-		context.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, panelY + PANEL_PADDING, ACCENT_COLOR);
+		context.drawCenteredString(this.font, this.title, this.width / 2, panelY + PANEL_PADDING, ACCENT_COLOR);
 
 		int itemSectionY = panelY + PANEL_PADDING + 25;
 		int displayIndex = Math.min(currentItemIndex, itemsToExport.size() - 1);
@@ -233,22 +231,22 @@ public class ExportScreen extends Screen {
 			int itemX = itemFrameX + 4;
 			int itemY = itemFrameY + 4;
 
-			context.getMatrices().pushMatrix();
-			context.getMatrices().translate(itemX + ITEM_SIZE / 2f, itemY + ITEM_SIZE / 2f);
-			context.getMatrices().scale(3.0f, 3.0f);
-			context.getMatrices().translate(-8, -8);
-			context.drawItem(stack, 0, 0);
-			context.getMatrices().popMatrix();
+			context.pose().pushMatrix();
+			context.pose().translate(itemX + ITEM_SIZE / 2f, itemY + ITEM_SIZE / 2f);
+			context.pose().scale(3.0f, 3.0f);
+			context.pose().translate(-8, -8);
+			context.renderItem(stack, 0, 0);
+			context.pose().popMatrix();
 
-			String itemName = stack.getName().getString();
+			String itemName = stack.getHoverName().getString();
 			if (itemName.length() > 25) {
 				itemName = itemName.substring(0, 22) + "...";
 			}
-			context.drawCenteredTextWithShadow(this.textRenderer, Text.literal(itemName),
-					this.width / 2, itemSectionY + itemFrameSize + 8, Colors.WHITE);
+			context.drawCenteredString(this.font, Component.literal(itemName),
+					this.width / 2, itemSectionY + itemFrameSize + 8, CommonColors.WHITE);
 
 			if (mouseX >= itemX && mouseX < itemX + ITEM_SIZE && mouseY >= itemY && mouseY < itemY + ITEM_SIZE) {
-				context.drawItemTooltip(this.textRenderer, stack, mouseX, mouseY);
+				context.setTooltipForNextFrame(this.font, stack, mouseX, mouseY);
 			}
 		}
 
@@ -272,25 +270,25 @@ public class ExportScreen extends Screen {
 
 		String progressText = String.format("%d / %d items (%.1f%%)",
 				completed, itemsToExport.size(), progress * 100);
-		context.drawCenteredTextWithShadow(this.textRenderer, progressText,
-				this.width / 2, progressY + PROGRESS_BAR_HEIGHT + 8, Colors.WHITE);
+		context.drawCenteredString(this.font, progressText,
+				this.width / 2, progressY + PROGRESS_BAR_HEIGHT + 8, CommonColors.WHITE);
 
 		String statusText = isExporting ? "⚡ Exporting..." : (isComplete ? (finishedWithErrors ? "Finished with errors" : "Export Complete!") : "Ready to export");
-		int statusColor = isExporting ? 0xFFFFAA00 : (isComplete ? (finishedWithErrors ? 0xFFFF5555 : 0xFF00FF00) : Colors.LIGHT_GRAY);
-		context.drawCenteredTextWithShadow(this.textRenderer, Text.literal(statusText),
+		int statusColor = isExporting ? 0xFFFFAA00 : (isComplete ? (finishedWithErrors ? 0xFFFF5555 : 0xFF00FF00) : CommonColors.LIGHT_GRAY);
+		context.drawCenteredString(this.font, Component.literal(statusText),
 				this.width / 2, progressY + PROGRESS_BAR_HEIGHT + 25, statusColor);
 
 		super.render(context, mouseX, mouseY, delta);
 	}
 
 	boolean isModel2D(Item item) {
-		BakedModelManager modelManager = MinecraftClient.getInstance().getBakedModelManager();
-		Identifier modelId = ModelIds.getItemModelId(item);
-		ItemModel baked = modelManager.getItemModel(Registries.ITEM.getId(item));
-		ItemRenderState state = new ItemRenderState();
-		baked.update(state, item.getDefaultStack(), MinecraftClient.getInstance().getItemModelManager(), ItemDisplayContext.GUI, null, null, 0);
+		ModelManager modelManager = Minecraft.getInstance().getModelManager();
+		Identifier modelId = ModelLocationUtils.getModelLocation(item);
+		ItemModel baked = modelManager.getItemModel(BuiltInRegistries.ITEM.getKey(item));
+		ItemStackRenderState state = new ItemStackRenderState();
+		baked.update(state, item.getDefaultInstance(), Minecraft.getInstance().getItemModelResolver(), ItemDisplayContext.GUI, null, null, 0);
 
-		return state.getModelBoundingBox().getLengthZ() >= 0.1; // flat
+		return state.getModelBoundingBox().getZsize() >= 0.1; // flat
 	}
 
 //    @Override
@@ -332,15 +330,15 @@ public class ExportScreen extends Screen {
 //    }
 
 	@Override
-	public void close() {
+	public void onClose() {
 		if (this.itemRenderer != null) {
 			this.itemRenderer.close();
 		}
-		super.close();
+		super.onClose();
 	}
 
 	@Override
-	public boolean shouldPause() {
+	public boolean isPauseScreen() {
 		return true;
 	}
 } 

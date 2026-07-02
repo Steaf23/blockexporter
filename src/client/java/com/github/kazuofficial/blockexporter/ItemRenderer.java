@@ -1,28 +1,29 @@
 package com.github.kazuofficial.blockexporter;
 
 import com.google.gson.JsonObject;
+import com.mojang.blaze3d.ProjectionType;
 import com.mojang.blaze3d.buffers.GpuBuffer;
+import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.blaze3d.pipeline.TextureTarget;
+import com.mojang.blaze3d.platform.Lighting;
+import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.systems.CommandEncoder;
-import com.mojang.blaze3d.systems.ProjectionType;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.textures.GpuTexture;
-
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gl.Framebuffer;
-import net.minecraft.client.gl.SimpleFramebuffer;
-import net.minecraft.client.render.*;
-import net.minecraft.client.render.command.OrderedRenderCommandQueue;
-import net.minecraft.client.render.command.RenderDispatcher;
-import net.minecraft.client.render.item.ItemRenderState;
-import net.minecraft.client.texture.NativeImage;
-import net.minecraft.client.util.math.MatrixStack;
-import net.minecraft.item.Item;
-import net.minecraft.item.ItemDisplayContext;
-import net.minecraft.item.ItemStack;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.Identifier;
-import net.minecraft.util.math.ColorHelper;
-
+import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.PerspectiveProjectionMatrixBuffer;
+import net.minecraft.client.renderer.SubmitNodeCollector;
+import net.minecraft.client.renderer.feature.FeatureRenderDispatcher;
+import net.minecraft.client.renderer.item.ItemStackRenderState;
+import net.minecraft.client.renderer.texture.OverlayTexture;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
+import net.minecraft.util.ARGB;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemDisplayContext;
+import net.minecraft.world.item.ItemStack;
 import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.injection.At;
 
@@ -41,41 +42,41 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 public class ItemRenderer implements AutoCloseable {
-	public static final Identifier ITEM_TEXTURE = Identifier.of("blockexporter:items");
-	public static final Identifier BLOCK_TEXTURE = Identifier.of("blockexporter:blocks");
+	public static final Identifier ITEM_TEXTURE = Identifier.parse("blockexporter:items");
+	public static final Identifier BLOCK_TEXTURE = Identifier.parse("blockexporter:blocks");
 
 	private final int textureSize;
     private final Path exportDirectory;
-    private final MinecraftClient client;
-    private SimpleFramebuffer framebuffer;
-    private final RawProjectionMatrix projectionMatrix;
-    private final ItemRenderState itemRenderState;
+    private final Minecraft client;
+    private TextureTarget framebuffer;
+    private final PerspectiveProjectionMatrixBuffer projectionMatrix;
+    private final ItemStackRenderState itemRenderState;
     private final ExecutorService fileWriteExecutor;
     private final Semaphore fileWriteSemaphore;
     private final ConcurrentLinkedQueue<ItemStack> failedExports;
     
-    private final MatrixStack matrices;
+    private final PoseStack matrices;
     private final Matrix4f orthoMatrix;
-    private final OrderedRenderCommandQueue renderCommandQueue;
-    private final RenderDispatcher renderDispatcher;
-    private final VertexConsumerProvider.Immediate vertexConsumers;
+    private final SubmitNodeCollector renderCommandQueue;
+    private final FeatureRenderDispatcher renderDispatcher;
+    private final MultiBufferSource.BufferSource vertexConsumers;
 
     public ItemRenderer(int textureSize) {
         this.textureSize = textureSize;
-        this.client = MinecraftClient.getInstance();
-        this.exportDirectory = client.runDirectory.toPath().resolve("item_exports");
-        this.projectionMatrix = new RawProjectionMatrix("item-exporter");
-        this.itemRenderState = new ItemRenderState();
+        this.client = Minecraft.getInstance();
+        this.exportDirectory = client.gameDirectory.toPath().resolve("item_exports");
+        this.projectionMatrix = new PerspectiveProjectionMatrixBuffer("item-exporter");
+        this.itemRenderState = new ItemStackRenderState();
         int coreCount = Runtime.getRuntime().availableProcessors();
         this.fileWriteExecutor = Executors.newFixedThreadPool(Math.max(2, coreCount / 2));
         this.fileWriteSemaphore = new Semaphore(coreCount);
         this.failedExports = new ConcurrentLinkedQueue<>();
 
-        this.matrices = new MatrixStack();
+        this.matrices = new PoseStack();
         this.orthoMatrix = new Matrix4f().setOrtho(0.0F, this.textureSize, this.textureSize, 0.0F, -1000.0F, 1000.0F);
-        this.renderCommandQueue = this.client.gameRenderer.getEntityRenderCommandQueue();
-        this.renderDispatcher = this.client.gameRenderer.getEntityRenderDispatcher();
-        this.vertexConsumers = this.client.getBufferBuilders().getEntityVertexConsumers();
+        this.renderCommandQueue = this.client.gameRenderer.getSubmitNodeStorage();
+        this.renderDispatcher = this.client.gameRenderer.getFeatureRenderDispatcher();
+        this.vertexConsumers = this.client.renderBuffers().bufferSource();
 
         try {
             Files.createDirectories(exportDirectory);
@@ -85,7 +86,7 @@ public class ItemRenderer implements AutoCloseable {
             throw new RuntimeException("Failed to create export directory", e);
         }
         
-        this.framebuffer = new SimpleFramebuffer("item-exporter", this.textureSize, this.textureSize, true);
+        this.framebuffer = new TextureTarget("item-exporter", this.textureSize, this.textureSize, true);
     }
 
 	public CompletableFuture<List<NativeImage>> exportAllBatch(List<Item> items) {
@@ -95,15 +96,15 @@ public class ItemRenderer implements AutoCloseable {
 
 		CompletableFuture<List<NativeImage>> future = new CompletableFuture<>();
 
-		this.framebuffer = new SimpleFramebuffer("item-exporter", textureSize, textureSize, true);
+		this.framebuffer = new TextureTarget("item-exporter", textureSize, textureSize, true);
 
 		var oldColor = RenderSystem.outputColorTextureOverride;
 		var oldDepth = RenderSystem.outputDepthTextureOverride;
 
 		try {
-			RenderSystem.outputColorTextureOverride = this.framebuffer.getColorAttachmentView();
-			RenderSystem.outputDepthTextureOverride = this.framebuffer.getDepthAttachmentView();
-			RenderSystem.setProjectionMatrix(this.projectionMatrix.set(orthoMatrix), ProjectionType.ORTHOGRAPHIC);
+			RenderSystem.outputColorTextureOverride = this.framebuffer.getColorTextureView();
+			RenderSystem.outputDepthTextureOverride = this.framebuffer.getDepthTextureView();
+			RenderSystem.setProjectionMatrix(this.projectionMatrix.getBuffer(orthoMatrix), ProjectionType.ORTHOGRAPHIC);
 
 			future = itemsToImage(items);
 
@@ -126,9 +127,9 @@ public class ItemRenderer implements AutoCloseable {
         var oldDepth = RenderSystem.outputDepthTextureOverride;
 
         try {
-            RenderSystem.outputColorTextureOverride = this.framebuffer.getColorAttachmentView();
-            RenderSystem.outputDepthTextureOverride = this.framebuffer.getDepthAttachmentView();
-            RenderSystem.setProjectionMatrix(this.projectionMatrix.set(orthoMatrix), ProjectionType.ORTHOGRAPHIC);
+            RenderSystem.outputColorTextureOverride = this.framebuffer.getColorTextureView();
+            RenderSystem.outputDepthTextureOverride = this.framebuffer.getDepthTextureView();
+            RenderSystem.setProjectionMatrix(this.projectionMatrix.getBuffer(orthoMatrix), ProjectionType.ORTHOGRAPHIC);
 
             for (ItemStack stack : stacks) {
                 if (stack == null || stack.isEmpty()) {
@@ -152,35 +153,35 @@ public class ItemRenderer implements AutoCloseable {
 		int imageWidth = width * this.textureSize;
 		int imageHeight = height * this.textureSize;
 		for (int idx = 0; idx < items.size(); idx++) {
-			ItemStack stack = items.get(idx).getDefaultStack();
-			Identifier id = Registries.ITEM.getId(stack.getItem());
+			ItemStack stack = items.get(idx).getDefaultInstance();
+			Identifier id = BuiltInRegistries.ITEM.getKey(stack.getItem());
 
 			int xPosition = idx % width;
 			int yPosition = idx / height;
 
-			matrices.push();
+			matrices.pushPose();
 			matrices.translate((xPosition + 0.5) / (float) width * this.textureSize, (yPosition + 0.5) / (float) height * this.textureSize, 100.0);
 			matrices.scale((float) this.textureSize / width, (float) -this.textureSize / height, (float) this.textureSize / width);
 
 			CommandEncoder commandEncoder = RenderSystem.getDevice().createCommandEncoder();
 			commandEncoder.clearColorAndDepthTextures(
-					this.framebuffer.getColorAttachment(), 0x00000000,
-					this.framebuffer.getDepthAttachment(), 1.0F
+					this.framebuffer.getColorTexture(), 0x00000000,
+					this.framebuffer.getDepthTexture(), 1.0F
 			);
 
-			client.getItemModelManager().clearAndUpdate(this.itemRenderState, stack, ItemDisplayContext.GUI, client.world, null, 0);
-			if (this.itemRenderState.getModelBoundingBox().getLengthZ() > 0.1) {
-				client.gameRenderer.getDiffuseLighting().setShaderLights(DiffuseLighting.Type.ITEMS_3D);
+			client.getItemModelResolver().updateForTopItem(this.itemRenderState, stack, ItemDisplayContext.GUI, client.level, null, 0);
+			if (this.itemRenderState.getModelBoundingBox().getZsize() > 0.1) {
+				client.gameRenderer.getLighting().setupFor(Lighting.Entry.ITEMS_3D);
 			} else {
-				client.gameRenderer.getDiffuseLighting().setShaderLights(DiffuseLighting.Type.ITEMS_FLAT);
+				client.gameRenderer.getLighting().setupFor(Lighting.Entry.ITEMS_FLAT);
 			}
 
-			this.itemRenderState.render(matrices, renderCommandQueue, 15728880, OverlayTexture.DEFAULT_UV, 0);
-			matrices.pop();
+			this.itemRenderState.submit(matrices, renderCommandQueue, 15728880, OverlayTexture.NO_OVERLAY, 0);
+			matrices.popPose();
 
 //			if (itemRenderState.is)
-			this.renderDispatcher.render();
-			this.vertexConsumers.draw();
+			this.renderDispatcher.renderAllFeatures();
+			this.vertexConsumers.endBatch();
 //			takeScreenshotAsync(this.framebuffer, id, stack, completion);
 		}
 
@@ -211,7 +212,7 @@ public class ItemRenderer implements AutoCloseable {
 		// Clear to transparent
 		for (int y = 0; y < atlasHeight; y++) {
 			for (int x = 0; x < atlasWidth; x++) {
-				atlas.setColor(x, y, 0x00000000);
+				atlas.setPixelABGR(x, y, 0x00000000);
 			}
 		}
 
@@ -236,39 +237,39 @@ public class ItemRenderer implements AutoCloseable {
 
 		for (int y = 0; y < height; y++) {
 			for (int x = 0; x < width; x++) {
-				int color = src.getColorArgb(x, y);
-				dst.setColorArgb(dstX + x, dstY + y, color);
+				int color = src.getPixel(x, y);
+				dst.setPixel(dstX + x, dstY + y, color);
 			}
 		}
 	}
 
     private void exportSingleItemFast(ItemStack stack, AtomicInteger completionCounter) {
-        Identifier id = Registries.ITEM.getId(stack.getItem());
+        Identifier id = BuiltInRegistries.ITEM.getKey(stack.getItem());
 
         try {
-            client.getItemModelManager().clearAndUpdate(this.itemRenderState, stack, ItemDisplayContext.GUI, client.world, null, 0);
+            client.getItemModelResolver().updateForTopItem(this.itemRenderState, stack, ItemDisplayContext.GUI, client.level, null, 0);
 
             CommandEncoder commandEncoder = RenderSystem.getDevice().createCommandEncoder();
             commandEncoder.clearColorAndDepthTextures(
-                this.framebuffer.getColorAttachment(), 0x00000000,
-                this.framebuffer.getDepthAttachment(), 1.0F
+                this.framebuffer.getColorTexture(), 0x00000000,
+                this.framebuffer.getDepthTexture(), 1.0F
             );
 
-            matrices.push();
+            matrices.pushPose();
             matrices.translate(this.textureSize / 2.0, this.textureSize / 2.0, 100.0);
             matrices.scale(this.textureSize, -this.textureSize, this.textureSize);
 
-            if (this.itemRenderState.isSideLit()) {
-                client.gameRenderer.getDiffuseLighting().setShaderLights(DiffuseLighting.Type.ITEMS_3D);
+            if (this.itemRenderState.usesBlockLight()) {
+                client.gameRenderer.getLighting().setupFor(Lighting.Entry.ITEMS_3D);
             } else {
-                client.gameRenderer.getDiffuseLighting().setShaderLights(DiffuseLighting.Type.ITEMS_FLAT);
+                client.gameRenderer.getLighting().setupFor(Lighting.Entry.ITEMS_FLAT);
             }
 
-            this.itemRenderState.render(matrices, renderCommandQueue, 15728880, OverlayTexture.DEFAULT_UV, 0);
-            matrices.pop();
+            this.itemRenderState.submit(matrices, renderCommandQueue, 15728880, OverlayTexture.NO_OVERLAY, 0);
+            matrices.popPose();
 
-            this.renderDispatcher.render();
-            this.vertexConsumers.draw();
+            this.renderDispatcher.renderAllFeatures();
+            this.vertexConsumers.endBatch();
 
             takeScreenshotAsync(this.framebuffer, id, stack, completionCounter);
 
@@ -285,7 +286,7 @@ public class ItemRenderer implements AutoCloseable {
 			try {
 				this.fileWriteSemaphore.acquire();
 				Path filePath = exportDirectory.resolve(file.getPath() + ".png");
-				image.writeTo(filePath);
+				image.writeToFile(filePath);
 				BlockExporter.LOGGER.debug("Async exported: {}", filePath.getFileName());
 			} catch (IOException e) {
 				BlockExporter.LOGGER.error("Failed to save exported item image: {}", file, e);
@@ -310,33 +311,33 @@ public class ItemRenderer implements AutoCloseable {
 		CompletableFuture<List<NativeImage>> cb = new CompletableFuture<>();
 		int idx = 0;
 		for (Item item : items) {
-			ItemStack stack = item.getDefaultStack();
-			Identifier id = Registries.ITEM.getId(stack.getItem());
+			ItemStack stack = item.getDefaultInstance();
+			Identifier id = BuiltInRegistries.ITEM.getKey(stack.getItem());
 
 			try {
-				client.getItemModelManager().clearAndUpdate(this.itemRenderState, stack, ItemDisplayContext.GUI, client.world, null, 0);
+				client.getItemModelResolver().updateForTopItem(this.itemRenderState, stack, ItemDisplayContext.GUI, client.level, null, 0);
 
 				CommandEncoder commandEncoder = RenderSystem.getDevice().createCommandEncoder();
 				commandEncoder.clearColorAndDepthTextures(
-						this.framebuffer.getColorAttachment(), 0x00000000,
-						this.framebuffer.getDepthAttachment(), 1.0F
+						this.framebuffer.getColorTexture(), 0x00000000,
+						this.framebuffer.getDepthTexture(), 1.0F
 				);
 
-				matrices.push();
+				matrices.pushPose();
 				matrices.translate(this.textureSize / 2.0, this.textureSize / 2.0, 100.0);
 				matrices.scale(this.textureSize, -this.textureSize, this.textureSize);
 
-				if (this.itemRenderState.isSideLit()) {
-					client.gameRenderer.getDiffuseLighting().setShaderLights(DiffuseLighting.Type.ITEMS_3D);
+				if (this.itemRenderState.usesBlockLight()) {
+					client.gameRenderer.getLighting().setupFor(Lighting.Entry.ITEMS_3D);
 				} else {
-					client.gameRenderer.getDiffuseLighting().setShaderLights(DiffuseLighting.Type.ITEMS_FLAT);
+					client.gameRenderer.getLighting().setupFor(Lighting.Entry.ITEMS_FLAT);
 				}
 
-				this.itemRenderState.render(matrices, renderCommandQueue, 15728880, OverlayTexture.DEFAULT_UV, 0);
-				matrices.pop();
+				this.itemRenderState.submit(matrices, renderCommandQueue, 15728880, OverlayTexture.NO_OVERLAY, 0);
+				matrices.popPose();
 
-				this.renderDispatcher.render();
-				this.vertexConsumers.draw();
+				this.renderDispatcher.renderAllFeatures();
+				this.vertexConsumers.endBatch();
 
 				int index = idx;
 				takeScreenshot(framebuffer, 1, img -> {
@@ -357,7 +358,7 @@ public class ItemRenderer implements AutoCloseable {
 		return cb;
 	}
 
-    private void takeScreenshotAsync(Framebuffer framebuffer, Identifier itemId, ItemStack itemStack, AtomicInteger completionCounter) {
+    private void takeScreenshotAsync(RenderTarget framebuffer, Identifier itemId, ItemStack itemStack, AtomicInteger completionCounter) {
 //        takeScreenshot(framebuffer, (image) -> {
 //            CompletableFuture.runAsync(() -> {
 //                try {
@@ -383,10 +384,10 @@ public class ItemRenderer implements AutoCloseable {
 //        });
     }
 
-	public static void takeScreenshot(Framebuffer framebuffer, int downscaleFactor, Consumer<NativeImage> callback) {
-		int i = framebuffer.textureWidth;
-		int j = framebuffer.textureHeight;
-		GpuTexture gpuTexture = framebuffer.getColorAttachment();
+	public static void takeScreenshot(RenderTarget framebuffer, int downscaleFactor, Consumer<NativeImage> callback) {
+		int i = framebuffer.width;
+		int j = framebuffer.height;
+		GpuTexture gpuTexture = framebuffer.getColorTexture();
 		if (gpuTexture == null) {
 			throw new IllegalStateException("Tried to capture screenshot of an incomplete framebuffer");
 		} else if (i % downscaleFactor == 0 && j % downscaleFactor == 0) {
@@ -402,7 +403,7 @@ public class ItemRenderer implements AutoCloseable {
 						for (int o = 0; o < m; o++) {
 							if (downscaleFactor == 1) {
 								int p = mappedView.data().getInt((o + n * i) * gpuTexture.getFormat().pixelSize());
-								nativeImage.setColor(o, j - n - 1, p);
+								nativeImage.setPixelABGR(o, j - n - 1, p);
 							} else {
 								int p = 0;
 								int q = 0;
@@ -412,15 +413,15 @@ public class ItemRenderer implements AutoCloseable {
 								for (int s = 0; s < downscaleFactor; s++) {
 									for (int t = 0; t < downscaleFactor; t++) {
 										int u = mappedView.data().getInt((o * downscaleFactor + s + (n * downscaleFactor + t) * i) * gpuTexture.getFormat().pixelSize());
-										p += ColorHelper.getRed(u);
-										q += ColorHelper.getGreen(u);
-										r += ColorHelper.getBlue(u);
-										a += ColorHelper.getAlpha(u);
+										p += ARGB.red(u);
+										q += ARGB.green(u);
+										r += ARGB.blue(u);
+										a += ARGB.alpha(u);
 									}
 								}
 
 								int s = downscaleFactor * downscaleFactor;
-								nativeImage.setColor(o, l - n - 1, ColorHelper.getArgb(a / s, p / s, q / s, r / s));
+								nativeImage.setPixelABGR(o, l - n - 1, ARGB.color(a / s, p / s, q / s, r / s));
 							}
 						}
 					}
@@ -443,6 +444,6 @@ public class ItemRenderer implements AutoCloseable {
     public void close() {
         this.fileWriteExecutor.shutdown();
         this.projectionMatrix.close();
-        this.framebuffer.delete();
+        this.framebuffer.destroyBuffers();
     }
 }
