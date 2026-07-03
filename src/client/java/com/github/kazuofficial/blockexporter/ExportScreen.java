@@ -3,7 +3,7 @@ package com.github.kazuofficial.blockexporter;
 import com.google.gson.JsonObject;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.data.models.model.ModelLocationUtils;
-import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.renderer.item.ItemModel;
@@ -208,13 +208,12 @@ public class ExportScreen extends Screen {
 	}
 
 	@Override
-	public void render(GuiGraphics context, int mouseX, int mouseY, float delta) {
-		this.renderTransparentBackground(context);
+	public void extractRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
 
 		int panelHeight = 240;
 		int panelY = (this.height - panelHeight) / 2 - 20;
 
-		context.drawCenteredString(this.font, this.title, this.width / 2, panelY + PANEL_PADDING, ACCENT_COLOR);
+		context.text(this.font, this.title, this.width / 2, panelY + PANEL_PADDING, ACCENT_COLOR);
 
 		int itemSectionY = panelY + PANEL_PADDING + 25;
 		int displayIndex = Math.min(currentItemIndex, itemsToExport.size() - 1);
@@ -235,14 +234,14 @@ public class ExportScreen extends Screen {
 			context.pose().translate(itemX + ITEM_SIZE / 2f, itemY + ITEM_SIZE / 2f);
 			context.pose().scale(3.0f, 3.0f);
 			context.pose().translate(-8, -8);
-			context.renderItem(stack, 0, 0);
+			context.item(stack, 0, 0);
 			context.pose().popMatrix();
 
 			String itemName = stack.getHoverName().getString();
 			if (itemName.length() > 25) {
 				itemName = itemName.substring(0, 22) + "...";
 			}
-			context.drawCenteredString(this.font, Component.literal(itemName),
+			context.text(this.font, Component.literal(itemName),
 					this.width / 2, itemSectionY + itemFrameSize + 8, CommonColors.WHITE);
 
 			if (mouseX >= itemX && mouseX < itemX + ITEM_SIZE && mouseY >= itemY && mouseY < itemY + ITEM_SIZE) {
@@ -270,15 +269,15 @@ public class ExportScreen extends Screen {
 
 		String progressText = String.format("%d / %d items (%.1f%%)",
 				completed, itemsToExport.size(), progress * 100);
-		context.drawCenteredString(this.font, progressText,
+		context.text(this.font, progressText,
 				this.width / 2, progressY + PROGRESS_BAR_HEIGHT + 8, CommonColors.WHITE);
 
 		String statusText = isExporting ? "⚡ Exporting..." : (isComplete ? (finishedWithErrors ? "Finished with errors" : "Export Complete!") : "Ready to export");
 		int statusColor = isExporting ? 0xFFFFAA00 : (isComplete ? (finishedWithErrors ? 0xFFFF5555 : 0xFF00FF00) : CommonColors.LIGHT_GRAY);
-		context.drawCenteredString(this.font, Component.literal(statusText),
+		context.text(this.font, Component.literal(statusText),
 				this.width / 2, progressY + PROGRESS_BAR_HEIGHT + 25, statusColor);
 
-		super.render(context, mouseX, mouseY, delta);
+		super.extractRenderState(context, mouseX, mouseY, delta);
 	}
 
 	boolean isModel2D(Item item) {
