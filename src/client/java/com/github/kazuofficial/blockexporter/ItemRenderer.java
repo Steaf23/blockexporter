@@ -1,12 +1,15 @@
 package com.github.kazuofficial.blockexporter;
 
 import com.mojang.blaze3d.ProjectionType;
+import com.mojang.blaze3d.buffers.GpuBuffer;
+import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.pipeline.TextureTarget;
 import com.mojang.blaze3d.platform.Lighting;
 import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.systems.CommandEncoder;
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
@@ -50,7 +53,7 @@ public class ItemRenderer implements AutoCloseable {
     private final ExecutorService fileWriteExecutor;
     private final Semaphore fileWriteSemaphore;
     private final ConcurrentLinkedQueue<ItemStack> failedExports;
-    
+
     private final PoseStack matrices;
 
     public ItemRenderer(int textureSize) {
@@ -75,7 +78,7 @@ public class ItemRenderer implements AutoCloseable {
             BlockExporter.LOGGER.error("Failed to create export directory: {}", exportDirectory.toAbsolutePath(), e);
             throw new RuntimeException("Failed to create export directory", e);
         }
-        
+
         this.framebuffer = new TextureTarget("item-exporter", this.textureSize, this.textureSize, true);
     }
 
@@ -203,8 +206,6 @@ public class ItemRenderer implements AutoCloseable {
 						this.framebuffer.getDepthTexture(), 1.0F
 				);
 
-				FeatureRenderDispatcher featureRenderDispatcher = client.gameRenderer.getFeatureRenderDispatcher();
-				SubmitNodeStorage submitNodeStorage = featureRenderDispatcher.getSubmitNodeStorage();
 
 				matrices.pushPose();
 				matrices.translate(this.textureSize / 2.0, this.textureSize / 2.0, 0.0);
@@ -216,11 +217,14 @@ public class ItemRenderer implements AutoCloseable {
 					client.gameRenderer.getLighting().setupFor(Lighting.Entry.ITEMS_FLAT);
 				}
 
-				RenderSystem.enableScissorForRenderTypeDraws(0, 0, this.textureSize, this.textureSize);
+				FeatureRenderDispatcher featureRenderDispatcher = client.gameRenderer.getFeatureRenderDispatcher();
+				SubmitNodeStorage submitNodeStorage = featureRenderDispatcher.getSubmitNodeStorage();
+
+//				RenderSystem.enableScissorForRenderTypeDraws(0, 0, this.textureSize, this.textureSize);
 				this.itemRenderState.submit(matrices, submitNodeStorage, 15728880, OverlayTexture.NO_OVERLAY, 0);
 				featureRenderDispatcher.renderAllFeatures();
 				client.renderBuffers().bufferSource().endBatch();
-				RenderSystem.disableScissorForRenderTypeDraws();
+//				RenderSystem.disableScissorForRenderTypeDraws();
 				matrices.popPose();
 
 				int index = idx;
@@ -269,53 +273,53 @@ public class ItemRenderer implements AutoCloseable {
     }
 
 	public static void takeScreenshot(RenderTarget framebuffer, int downscaleFactor, Consumer<NativeImage> callback) {
-		Screenshot.takeScreenshot(framebuffer, downscaleFactor, callback);
-//		int width = framebuffer.width;
-//		int height = framebuffer.height;
-//		GpuTexture gpuTexture = framebuffer.getColorTexture();
-//		if (gpuTexture == null) {
-//			throw new IllegalStateException("Tried to capture screenshot of an incomplete framebuffer");
-//		} else if (width % downscaleFactor == 0 && height % downscaleFactor == 0) {
-//			GpuBuffer gpuBuffer = RenderSystem.getDevice().createBuffer(() -> "Screenshot buffer", 9, (long) width * height * gpuTexture.getFormat().blockSize());
-//			CommandEncoder commandEncoder = RenderSystem.getDevice().createCommandEncoder();
-//			RenderSystem.getDevice().createCommandEncoder().copyTextureToBuffer(gpuTexture, gpuBuffer, 0L, () -> {
-//				try (GpuBufferSlice.MappedView mappedView = commandEncoder.mapBuffer(gpuBuffer, true, false)) {
-//					int outputWidth = width / downscaleFactor;
-//					int outputHeight = height / downscaleFactor;
-//					NativeImage nativeImage = new NativeImage(outputWidth, outputHeight, false);
-//
-//					for (int y = 0; y < outputHeight; y++) {
-//						for (int x = 0; x < outputWidth; x++) {
-//							if (downscaleFactor == 1) {
-//								int abgr = mappedView.data().getInt((x + y * width) * gpuTexture.getFormat().blockSize());
-//								nativeImage.setPixelABGR(x, height - y - 1, abgr);
-//							} else {
-//								int r = 0, g = 0, b = 0, a = 0;
-//								for (int s = 0; s < downscaleFactor; s++) {
-//									for (int t = 0; t < downscaleFactor; t++) {
-//										int abgr = mappedView.data().getInt((x * downscaleFactor + s + (y * downscaleFactor + t) * width) * gpuTexture.getFormat().blockSize());
-//										r += abgr & 0xFF;
-//										g += (abgr >> 8) & 0xFF;
-//										b += (abgr >> 16) & 0xFF;
-//										a += (abgr >>> 24);
-//									}
-//								}
-//								int samples = downscaleFactor * downscaleFactor;
-//								nativeImage.setPixelABGR(x, outputHeight - y - 1,
-//										((a / samples) << 24) | ((b / samples) << 16) | ((g / samples) << 8) | (r / samples));
-//
-//							}
-//						}
-//					}
-//
-//					callback.accept(nativeImage);
-//				}
-//
-//				gpuBuffer.close();
-//			}, 0);
-//		} else {
-//			throw new IllegalArgumentException("Image size is not divisible by downscale factor");
-//		}
+//		Screenshot.takeScreenshot(framebuffer, downscaleFactor, callback);
+		int width = framebuffer.width;
+		int height = framebuffer.height;
+		GpuTexture gpuTexture = framebuffer.getColorTexture();
+		if (gpuTexture == null) {
+			throw new IllegalStateException("Tried to capture screenshot of an incomplete framebuffer");
+		} else if (width % downscaleFactor == 0 && height % downscaleFactor == 0) {
+			GpuBuffer gpuBuffer = RenderSystem.getDevice().createBuffer(() -> "Screenshot buffer", 9, (long) width * height * gpuTexture.getFormat().pixelSize());
+			CommandEncoder commandEncoder = RenderSystem.getDevice().createCommandEncoder();
+			RenderSystem.getDevice().createCommandEncoder().copyTextureToBuffer(gpuTexture, gpuBuffer, 0L, () -> {
+				try (GpuBuffer.MappedView mappedView = commandEncoder.mapBuffer(gpuBuffer, true, false)) {
+					int outputWidth = width / downscaleFactor;
+					int outputHeight = height / downscaleFactor;
+					NativeImage nativeImage = new NativeImage(outputWidth, outputHeight, false);
+
+					for (int y = 0; y < outputHeight; y++) {
+						for (int x = 0; x < outputWidth; x++) {
+							if (downscaleFactor == 1) {
+								int abgr = mappedView.data().getInt((x + y * width) * gpuTexture.getFormat().pixelSize());
+								nativeImage.setPixelABGR(x, height - y - 1, abgr);
+							} else {
+								int r = 0, g = 0, b = 0, a = 0;
+								for (int s = 0; s < downscaleFactor; s++) {
+									for (int t = 0; t < downscaleFactor; t++) {
+										int abgr = mappedView.data().getInt((x * downscaleFactor + s + (y * downscaleFactor + t) * width) * gpuTexture.getFormat().pixelSize());
+										r += abgr & 0xFF;
+										g += (abgr >> 8) & 0xFF;
+										b += (abgr >> 16) & 0xFF;
+										a += (abgr >>> 24);
+									}
+								}
+								int samples = downscaleFactor * downscaleFactor;
+								nativeImage.setPixelABGR(x, outputHeight - y - 1,
+										((a / samples) << 24) | ((b / samples) << 16) | ((g / samples) << 8) | (r / samples));
+
+							}
+						}
+					}
+
+					callback.accept(nativeImage);
+				}
+
+				gpuBuffer.close();
+			}, 0);
+		} else {
+			throw new IllegalArgumentException("Image size is not divisible by downscale factor");
+		}
 	}
 
     public List<ItemStack> getFailedExports() {
