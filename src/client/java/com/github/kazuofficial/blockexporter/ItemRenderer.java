@@ -1,17 +1,17 @@
 package com.github.kazuofficial.blockexporter;
 
-import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.ProjectionType;
-import com.mojang.blaze3d.buffers.GpuBuffer;
-import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.pipeline.TextureTarget;
 import com.mojang.blaze3d.platform.Lighting;
 import com.mojang.blaze3d.platform.NativeImage;
-import com.mojang.blaze3d.systems.CommandEncoder;
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.renderpearl.api.GpuFormat;
+import com.mojang.renderpearl.api.buffers.GpuBuffer;
+import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
+import com.mojang.renderpearl.api.commands.CommandEncoder;
+import com.mojang.renderpearl.api.commands.RenderPass;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.render.GuiRenderer;
 import net.minecraft.client.renderer.Projection;
@@ -25,7 +25,6 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemDisplayContext;
 import net.minecraft.world.item.ItemStack;
-import org.joml.Vector4f;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -33,6 +32,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
+import java.util.OptionalDouble;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
@@ -82,7 +83,7 @@ public class ItemRenderer implements AutoCloseable {
             throw new RuntimeException("Failed to create export directory", e);
         }
 
-        this.framebuffer = new TextureTarget("item-exporter", this.textureSize, this.textureSize, true, GpuFormat.RGBA8_UNORM);
+        this.framebuffer = new TextureTarget("item-exporter", this.textureSize, this.textureSize, GpuFormat.RGBA8_UNORM, GpuFormat.D32_FLOAT);
     }
 
 	public CompletableFuture<List<NativeImage>> exportAllBatch(List<Item> items) {
@@ -200,8 +201,6 @@ public class ItemRenderer implements AutoCloseable {
 				matrices.pushPose();
 				matrices.translate(this.textureSize / 2.0, this.textureSize / 2.0, 0.0);
 				matrices.scale(this.textureSize, -this.textureSize, this.textureSize);
-				RenderSystem.outputColorTextureOverride = this.framebuffer.getColorTextureView();
-				RenderSystem.outputDepthTextureOverride = this.framebuffer.getDepthTextureView();
 				this.projection.setupOrtho(-1000.0f, 1000.0f, this.textureSize, this.textureSize, true);
 				RenderSystem.setProjectionMatrix(this.projectionMatrixBuffer.getBuffer(this.projection), ProjectionType.ORTHOGRAPHIC);
 				Lighting.Entry lighting = itemRenderState.usesBlockLight() ? Lighting.Entry.ITEMS_3D : Lighting.Entry.ITEMS_FLAT;
@@ -209,9 +208,27 @@ public class ItemRenderer implements AutoCloseable {
 
 				FeatureRenderDispatcher featureRenderDispatcher = client.gameRenderer.featureRenderDispatcher();
 				this.itemRenderState.submit(matrices, submitNodeStorage, 15728880, OverlayTexture.NO_OVERLAY, 0);
-				featureRenderDispatcher.renderAllFeatures(submitNodeStorage);
-				RenderSystem.outputColorTextureOverride = null;
-				RenderSystem.outputDepthTextureOverride = null;
+
+				try (FeatureRenderDispatcher.PreparedFrame frame = featureRenderDispatcher.prepareFrame(this.submitNodeStorage)) {
+					RenderPass renderPass = RenderSystem.getDevice()
+							.createCommandEncoder()
+							.createRenderPass(() -> "All items to GUI atlas image blockexporter", this.framebuffer.getColorTextureView(), Optional.empty(), this.framebuffer.getDepthTextureView(), OptionalDouble.empty());
+					try {
+						RenderSystem.bindDefaultUniforms(renderPass);
+						FeatureRenderDispatcher.renderAllFeatures(renderPass, frame);
+					} catch (Throwable throwable) {
+						try {
+							renderPass.close();
+						} catch (Throwable throwable2) {
+							throwable.addSuppressed(throwable2);
+						}
+
+						throw throwable;
+					}
+
+					renderPass.close();
+				}
+
 				matrices.popPose();
 
 				int index = idx;
@@ -263,7 +280,7 @@ public class ItemRenderer implements AutoCloseable {
 //		Screenshot.takeScreenshot(framebuffer, downscaleFactor, callback);
 		int width = framebuffer.width;
 		int height = framebuffer.height;
-		GpuTexture gpuTexture = framebuffer.getColorTexture();
+		com.mojang.renderpearl.api.textures.GpuTexture gpuTexture = framebuffer.getColorTexture();
 		if (gpuTexture == null) {
 			throw new IllegalStateException("Tried to capture screenshot of an incomplete framebuffer");
 		} else if (width % downscaleFactor == 0 && height % downscaleFactor == 0) {
