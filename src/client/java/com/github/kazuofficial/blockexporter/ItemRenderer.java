@@ -1,5 +1,6 @@
 package com.github.kazuofficial.blockexporter;
 
+import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.ProjectionType;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
@@ -12,7 +13,7 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.Screenshot;
+import net.minecraft.client.gui.render.GuiRenderer;
 import net.minecraft.client.renderer.Projection;
 import net.minecraft.client.renderer.ProjectionMatrixBuffer;
 import net.minecraft.client.renderer.SubmitNodeStorage;
@@ -24,6 +25,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemDisplayContext;
 import net.minecraft.world.item.ItemStack;
+import org.joml.Vector4f;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -53,6 +55,7 @@ public class ItemRenderer implements AutoCloseable {
     private final ExecutorService fileWriteExecutor;
     private final Semaphore fileWriteSemaphore;
     private final ConcurrentLinkedQueue<ItemStack> failedExports;
+	private final SubmitNodeStorage submitNodeStorage;
 
     private final PoseStack matrices;
 
@@ -61,13 +64,13 @@ public class ItemRenderer implements AutoCloseable {
         this.client = Minecraft.getInstance();
         this.exportDirectory = client.gameDirectory.toPath().resolve("item_exports");
 		this.projection = new Projection();
-		this.projection.setupOrtho(-1000, 1000, this.textureSize, this.textureSize, true);
         this.projectionMatrixBuffer = new ProjectionMatrixBuffer("item-exporter");
         this.itemRenderState = new ItemStackRenderState();
         int coreCount = Runtime.getRuntime().availableProcessors();
         this.fileWriteExecutor = Executors.newFixedThreadPool(Math.max(2, coreCount / 2));
         this.fileWriteSemaphore = new Semaphore(coreCount);
         this.failedExports = new ConcurrentLinkedQueue<>();
+		this.submitNodeStorage = new SubmitNodeStorage();
 
         this.matrices = new PoseStack();
 
@@ -79,7 +82,7 @@ public class ItemRenderer implements AutoCloseable {
             throw new RuntimeException("Failed to create export directory", e);
         }
 
-        this.framebuffer = new TextureTarget("item-exporter", this.textureSize, this.textureSize, true);
+        this.framebuffer = new TextureTarget("item-exporter", this.textureSize, this.textureSize, true, GpuFormat.RGBA8_UNORM);
     }
 
 	public CompletableFuture<List<NativeImage>> exportAllBatch(List<Item> items) {
@@ -88,22 +91,11 @@ public class ItemRenderer implements AutoCloseable {
 		}
 
 		CompletableFuture<List<NativeImage>> future = new CompletableFuture<>();
-
-		var oldColor = RenderSystem.outputColorTextureOverride;
-		var oldDepth = RenderSystem.outputDepthTextureOverride;
-
 		try {
-			RenderSystem.outputColorTextureOverride = this.framebuffer.getColorTextureView();
-			RenderSystem.outputDepthTextureOverride = this.framebuffer.getDepthTextureView();
-			RenderSystem.setProjectionMatrix(this.projectionMatrixBuffer.getBuffer(this.projection), ProjectionType.ORTHOGRAPHIC);
-
 			future = itemsToImage(items);
 
 		} catch (Exception e) {
 			BlockExporter.LOGGER.error("Failed to export item batch", e);
-		} finally {
-			RenderSystem.outputColorTextureOverride = oldColor;
-			RenderSystem.outputDepthTextureOverride = oldDepth;
 		}
 
 		return future;
@@ -200,31 +192,26 @@ public class ItemRenderer implements AutoCloseable {
 			try {
 				client.getItemModelResolver().updateForTopItem(this.itemRenderState, stack, ItemDisplayContext.GUI, client.level, null, 0);
 
-				CommandEncoder commandEncoder = RenderSystem.getDevice().createCommandEncoder();
-				commandEncoder.clearColorAndDepthTextures(
-						this.framebuffer.getColorTexture(), 0x00000000,
-						this.framebuffer.getDepthTexture(), 1.0F
+				RenderSystem.getDevice().createCommandEncoder().clearColorAndDepthTextures(
+						this.framebuffer.getColorTexture(), GuiRenderer.CLEAR_COLOR,
+						this.framebuffer.getDepthTexture(), 0.0, 0, 0, this.textureSize, this.textureSize
 				);
-
 
 				matrices.pushPose();
 				matrices.translate(this.textureSize / 2.0, this.textureSize / 2.0, 0.0);
 				matrices.scale(this.textureSize, -this.textureSize, this.textureSize);
+				RenderSystem.outputColorTextureOverride = this.framebuffer.getColorTextureView();
+				RenderSystem.outputDepthTextureOverride = this.framebuffer.getDepthTextureView();
+				this.projection.setupOrtho(-1000.0f, 1000.0f, this.textureSize, this.textureSize, true);
+				RenderSystem.setProjectionMatrix(this.projectionMatrixBuffer.getBuffer(this.projection), ProjectionType.ORTHOGRAPHIC);
+				Lighting.Entry lighting = itemRenderState.usesBlockLight() ? Lighting.Entry.ITEMS_3D : Lighting.Entry.ITEMS_FLAT;
+				Minecraft.getInstance().gameRenderer.lighting().setupFor(lighting);
 
-				if (this.itemRenderState.usesBlockLight()) {
-					client.gameRenderer.getLighting().setupFor(Lighting.Entry.ITEMS_3D);
-				} else {
-					client.gameRenderer.getLighting().setupFor(Lighting.Entry.ITEMS_FLAT);
-				}
-
-				FeatureRenderDispatcher featureRenderDispatcher = client.gameRenderer.getFeatureRenderDispatcher();
-				SubmitNodeStorage submitNodeStorage = featureRenderDispatcher.getSubmitNodeStorage();
-
-//				RenderSystem.enableScissorForRenderTypeDraws(0, 0, this.textureSize, this.textureSize);
+				FeatureRenderDispatcher featureRenderDispatcher = client.gameRenderer.featureRenderDispatcher();
 				this.itemRenderState.submit(matrices, submitNodeStorage, 15728880, OverlayTexture.NO_OVERLAY, 0);
-				featureRenderDispatcher.renderAllFeatures();
-				client.renderBuffers().bufferSource().endBatch();
-//				RenderSystem.disableScissorForRenderTypeDraws();
+				featureRenderDispatcher.renderAllFeatures(submitNodeStorage);
+				RenderSystem.outputColorTextureOverride = null;
+				RenderSystem.outputDepthTextureOverride = null;
 				matrices.popPose();
 
 				int index = idx;
@@ -280,40 +267,45 @@ public class ItemRenderer implements AutoCloseable {
 		if (gpuTexture == null) {
 			throw new IllegalStateException("Tried to capture screenshot of an incomplete framebuffer");
 		} else if (width % downscaleFactor == 0 && height % downscaleFactor == 0) {
-			GpuBuffer gpuBuffer = RenderSystem.getDevice().createBuffer(() -> "Screenshot buffer", 9, (long) width * height * gpuTexture.getFormat().pixelSize());
+			GpuBuffer gpuBuffer = RenderSystem.getDevice().createBuffer(() -> "Screenshot buffer", 9, (long) width * height * gpuTexture.getFormat().blockSize());
 			CommandEncoder commandEncoder = RenderSystem.getDevice().createCommandEncoder();
-			RenderSystem.getDevice().createCommandEncoder().copyTextureToBuffer(gpuTexture, gpuBuffer, 0L, () -> {
-				try (GpuBuffer.MappedView mappedView = commandEncoder.mapBuffer(gpuBuffer, true, false)) {
-					int outputWidth = width / downscaleFactor;
-					int outputHeight = height / downscaleFactor;
-					NativeImage nativeImage = new NativeImage(outputWidth, outputHeight, false);
+			RenderSystem.getDevice()
+					.createCommandEncoder()
+					.copyTextureToBuffer(
+							gpuTexture,
+							gpuBuffer,
+							0L, () -> {
+								try (GpuBufferSlice.MappedView mappedView = gpuBuffer.map(true, false)) {
+									int outputWidth = width / downscaleFactor;
+									int outputHeight = height / downscaleFactor;
+									NativeImage nativeImage = new NativeImage(outputWidth, outputHeight, false);
 
-					for (int y = 0; y < outputHeight; y++) {
-						for (int x = 0; x < outputWidth; x++) {
-							if (downscaleFactor == 1) {
-								int abgr = mappedView.data().getInt((x + y * width) * gpuTexture.getFormat().pixelSize());
-								nativeImage.setPixelABGR(x, height - y - 1, abgr);
-							} else {
-								int r = 0, g = 0, b = 0, a = 0;
-								for (int s = 0; s < downscaleFactor; s++) {
-									for (int t = 0; t < downscaleFactor; t++) {
-										int abgr = mappedView.data().getInt((x * downscaleFactor + s + (y * downscaleFactor + t) * width) * gpuTexture.getFormat().pixelSize());
-										r += abgr & 0xFF;
-										g += (abgr >> 8) & 0xFF;
-										b += (abgr >> 16) & 0xFF;
-										a += (abgr >>> 24);
+									for (int y = 0; y < outputHeight; y++) {
+										for (int x = 0; x < outputWidth; x++) {
+											if (downscaleFactor == 1) {
+												int abgr = mappedView.data().getInt((x + y * width) * gpuTexture.getFormat().blockSize());
+												nativeImage.setPixelABGR(x, height - y - 1, abgr);
+											} else {
+												int r = 0, g = 0, b = 0, a = 0;
+												for (int s = 0; s < downscaleFactor; s++) {
+													for (int t = 0; t < downscaleFactor; t++) {
+														int abgr = mappedView.data().getInt((x * downscaleFactor + s + (y * downscaleFactor + t) * width) * gpuTexture.getFormat().blockSize());
+														r += abgr & 0xFF;
+														g += (abgr >> 8) & 0xFF;
+														b += (abgr >> 16) & 0xFF;
+														a += (abgr >>> 24);
+													}
+												}
+												int samples = downscaleFactor * downscaleFactor;
+												nativeImage.setPixelABGR(x, outputHeight - y - 1,
+														((a / samples) << 24) | ((b / samples) << 16) | ((g / samples) << 8) | (r / samples));
+
+											}
+										}
 									}
+
+									callback.accept(nativeImage);
 								}
-								int samples = downscaleFactor * downscaleFactor;
-								nativeImage.setPixelABGR(x, outputHeight - y - 1,
-										((a / samples) << 24) | ((b / samples) << 16) | ((g / samples) << 8) | (r / samples));
-
-							}
-						}
-					}
-
-					callback.accept(nativeImage);
-				}
 
 				gpuBuffer.close();
 			}, 0);
