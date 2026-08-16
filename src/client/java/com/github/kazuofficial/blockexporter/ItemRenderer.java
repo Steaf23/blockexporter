@@ -195,8 +195,7 @@ public class ItemRenderer implements AutoCloseable {
 
 				RenderSystem.getDevice().createCommandEncoder().clearColorAndDepthTextures(
 						this.framebuffer.getColorTexture(), GuiRenderer.CLEAR_COLOR,
-						this.framebuffer.getDepthTexture(), 0.0, 0, 0, this.textureSize, this.textureSize
-				);
+						this.framebuffer.getDepthTexture(), 0.0);
 
 				matrices.pushPose();
 				matrices.translate(this.textureSize / 2.0, this.textureSize / 2.0, 0.0);
