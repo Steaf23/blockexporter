@@ -98,7 +98,7 @@ public class ExportScreen extends Screen {
 						button -> {
 							try {
 								Files.createDirectories(this.exportDirectory);
-								Util.getPlatform().openFile(this.exportDirectory.toFile());
+//								Util.getPlatform().openFile(this.exportDirectory.toFile());
 							} catch (IOException e) {
 								BlockExporter.LOGGER.error("Couldn't open export folder", e);
 							}
@@ -208,8 +208,10 @@ public class ExportScreen extends Screen {
 	}
 
 	@Override
-	public void extractRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
+	public void extractRenderState(GuiGraphicsExtractor context) {
 
+		int mouseX = context.mouseX();
+		int mouseY = context.mouseY();
 		int panelHeight = 240;
 		int panelY = (this.height - panelHeight) / 2 - 20;
 
@@ -277,7 +279,7 @@ public class ExportScreen extends Screen {
 		context.text(this.font, Component.literal(statusText),
 				this.width / 2, progressY + PROGRESS_BAR_HEIGHT + 25, statusColor);
 
-		super.extractRenderState(context, mouseX, mouseY, delta);
+		super.extractRenderState(context);
 	}
 
 	boolean isModel2D(Item item) {

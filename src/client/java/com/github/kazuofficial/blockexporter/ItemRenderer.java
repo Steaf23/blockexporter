@@ -12,10 +12,12 @@ import com.mojang.renderpearl.api.buffers.GpuBuffer;
 import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
 import com.mojang.renderpearl.api.commands.CommandEncoder;
 import com.mojang.renderpearl.api.commands.RenderPass;
+import com.mojang.renderpearl.api.pipeline.RenderPassLayout;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.render.GuiRenderer;
 import net.minecraft.client.renderer.Projection;
 import net.minecraft.client.renderer.ProjectionMatrixBuffer;
+import net.minecraft.client.renderer.RenderPassLayouts;
 import net.minecraft.client.renderer.SubmitNodeStorage;
 import net.minecraft.client.renderer.feature.FeatureRenderDispatcher;
 import net.minecraft.client.renderer.item.ItemStackRenderState;
@@ -211,7 +213,7 @@ public class ItemRenderer implements AutoCloseable {
 				try (FeatureRenderDispatcher.PreparedFrame frame = featureRenderDispatcher.prepareFrame(this.submitNodeStorage)) {
 					RenderPass renderPass = RenderSystem.getDevice()
 							.createCommandEncoder()
-							.createRenderPass(() -> "All items to GUI atlas image blockexporter", this.framebuffer.getColorTextureView(), Optional.empty(), this.framebuffer.getDepthTextureView(), OptionalDouble.empty());
+							.createRenderPass(() -> "All items to GUI atlas image blockexporter", RenderPassLayouts.COLOR_DEPTH, this.framebuffer.getColorTextureView(), Optional.empty(), this.framebuffer.getDepthTextureView(), OptionalDouble.empty());
 					try {
 						RenderSystem.bindDefaultUniforms(renderPass);
 						FeatureRenderDispatcher.renderAllFeatures(renderPass, frame);
@@ -285,46 +287,42 @@ public class ItemRenderer implements AutoCloseable {
 		} else if (width % downscaleFactor == 0 && height % downscaleFactor == 0) {
 			GpuBuffer gpuBuffer = RenderSystem.getDevice().createBuffer(() -> "Screenshot buffer", 9, (long) width * height * gpuTexture.getFormat().blockSize());
 			CommandEncoder commandEncoder = RenderSystem.getDevice().createCommandEncoder();
-			RenderSystem.getDevice()
-					.createCommandEncoder()
-					.copyTextureToBuffer(
-							gpuTexture,
-							gpuBuffer,
-							0L, () -> {
-								try (GpuBufferSlice.MappedView mappedView = gpuBuffer.map(true, false)) {
-									int outputWidth = width / downscaleFactor;
-									int outputHeight = height / downscaleFactor;
-									NativeImage nativeImage = new NativeImage(outputWidth, outputHeight, false);
+			commandEncoder.copyTextureToBuffer(gpuTexture, gpuBuffer, 0L, 0);
+			RenderSystem.queueFencedTask(() -> {
+				try (GpuBufferSlice.MappedView mappedView = gpuBuffer.map(true, false)) {
+					int outputWidth = width / downscaleFactor;
+					int outputHeight = height / downscaleFactor;
+					NativeImage nativeImage = new NativeImage(outputWidth, outputHeight, false);
 
-									for (int y = 0; y < outputHeight; y++) {
-										for (int x = 0; x < outputWidth; x++) {
-											if (downscaleFactor == 1) {
-												int abgr = mappedView.data().getInt((x + y * width) * gpuTexture.getFormat().blockSize());
-												nativeImage.setPixelABGR(x, height - y - 1, abgr);
-											} else {
-												int r = 0, g = 0, b = 0, a = 0;
-												for (int s = 0; s < downscaleFactor; s++) {
-													for (int t = 0; t < downscaleFactor; t++) {
-														int abgr = mappedView.data().getInt((x * downscaleFactor + s + (y * downscaleFactor + t) * width) * gpuTexture.getFormat().blockSize());
-														r += abgr & 0xFF;
-														g += (abgr >> 8) & 0xFF;
-														b += (abgr >> 16) & 0xFF;
-														a += (abgr >>> 24);
-													}
-												}
-												int samples = downscaleFactor * downscaleFactor;
-												nativeImage.setPixelABGR(x, outputHeight - y - 1,
-														((a / samples) << 24) | ((b / samples) << 16) | ((g / samples) << 8) | (r / samples));
-
-											}
-										}
+					for (int y = 0; y < outputHeight; y++) {
+						for (int x = 0; x < outputWidth; x++) {
+							if (downscaleFactor == 1) {
+								int abgr = mappedView.data().getInt((x + y * width) * gpuTexture.getFormat().blockSize());
+								nativeImage.setPixelABGR(x, height - y - 1, abgr);
+							} else {
+								int r = 0, g = 0, b = 0, a = 0;
+								for (int s = 0; s < downscaleFactor; s++) {
+									for (int t = 0; t < downscaleFactor; t++) {
+										int abgr = mappedView.data().getInt((x * downscaleFactor + s + (y * downscaleFactor + t) * width) * gpuTexture.getFormat().blockSize());
+										r += abgr & 0xFF;
+										g += (abgr >> 8) & 0xFF;
+										b += (abgr >> 16) & 0xFF;
+										a += (abgr >>> 24);
 									}
-
-									callback.accept(nativeImage);
 								}
+								int samples = downscaleFactor * downscaleFactor;
+								nativeImage.setPixelABGR(x, outputHeight - y - 1,
+										((a / samples) << 24) | ((b / samples) << 16) | ((g / samples) << 8) | (r / samples));
+
+							}
+						}
+					}
+
+					callback.accept(nativeImage);
+				}
 
 				gpuBuffer.close();
-			}, 0);
+			});
 		} else {
 			throw new IllegalArgumentException("Image size is not divisible by downscale factor");
 		}
